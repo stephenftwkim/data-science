@@ -1,0 +1,737 @@
+---
+title: "Stats 101C project"
+author: "Stephen Kim"
+date: "November 26, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(plyr)
+library(caret)
+library(mice)
+library(tree)
+library(corrplot)
+library(e1071)
+library(randomForest)
+```
+
+
+#1.0 Loading Data
+```{r}
+data = read.csv('HTrainLast.csv', stringsAsFactors = FALSE)
+test = read.csv('HTestLastNoY.csv', stringsAsFactors = FALSE)
+
+#Combining training and testing data to clean all data
+test$affordabilitty = rep("Affordable", 1500)
+data = rbind.data.frame(data,test)
+head(data)
+data = data[,-1]
+
+
+numeric_index = which(sapply(data, is.numeric))
+num_index = which(sapply(data, is.numeric))
+```
+
+#2.0 Feature Engineering
+
+##2.1 Cleaning Missing values
+
+###2.1.1 Total missing Values
+
+```{r}
+missing = which(colSums(is.na(data)) > 0)
+sort(colSums(sapply(data[missing], is.na)), decreasing = TRUE)
+```
+
+First we will eliminate the observations that have a missing value in affordabilitty, which is our response variable
+```{r}
+which(is.na(data$affordabilitty))
+data = data[-c(833,2428),]
+```
+
+
+###2.1.2 Cleaning the predictors Categorical Variables
+####Pool QC
+```{r}
+head(data$PoolQC, n=50)
+unique(data$PoolQC)
+```
+We can see that almost all the observations in PoolQC are missing, this is probably the case because the house does not contain a pool at all therefore we will add another level into PoolQC indicating no pool
+
+```{r}
+data$PoolQC[is.na(data$PoolQC)] = "None"
+head(data$PoolQC)
+```
+Now all the NA values are replaced with a level of "None" pool.
+But there are some houses that might have a pool area but an NA value in PoolQC
+
+```{r}
+data$PoolQC[data$PoolQC == "None" & data$PoolArea != 0]
+pool_missing = which(data$PoolQC == "None" & data$PoolArea != 0)
+pool_missing
+```
+Upon further inspection, there are 6 observations that have PoolArea that is not 0 and No pool in PoolQC. I will then give a value into the PoolQC according the the overall house condition to determine a placeholder
+
+```{r}
+#Checking the scale of overallcond
+unique(data$OverallCond)
+
+#Finding the condition of the houses that have a pool where PoolQC is missing
+data$OverallCond[pool_missing]
+data$PoolQC[pool_missing] = c("Fa", "Fa", "Fa", "Fa", "Fa", "Fa")
+```
+Since all the observations had an average house condition, I replaced the "None values with "Fa" which is the "average" of the PoolQC observations
+
+Lastly, because PoolQc is an "ordinal variable" where the order of the levels matter, we want to transform PoolQc into a numerical variable
+```{r}
+poolvalues = c('None' = 0,'Fa' = 1,'Gd' = 2, 'Ex' = 3)
+data$PoolQC = as.integer(revalue(data$PoolQC, poolvalues))
+unique(data$PoolQC)
+```
+
+
+####MiscFeature
+```{r}
+#Observing the unique values in MiscFeature
+unique(data$MiscFeature)
+
+data$MiscFeature[is.na(data$MiscFeature)] = "None"
+unique(data$MiscFeature)
+
+data$MiscFeature = factor(data$MiscFeature)
+```
+Because there are not any other columns that provide information for the MiscFeature, we simply we filled all the NA values with None
+
+
+####Alley
+```{r}
+unique(data$Alley)
+data$Alley[is.na(data$Alley)] = "None"
+
+data$Alley = factor(data$Alley)
+unique(data$Alley)
+```
+Same as the MiscFeature, there are no other columns that provide information for Alley, so we filled NAs with None
+
+####Fence
+```{r}
+unique(data$Fence)
+
+data$Fence[is.na(data$Fence)] = "None"
+
+data$Fence = factor(data$Fence)
+unique(data$Fence)
+```
+Filled NAs with None
+
+####Fireplace
+```{r}
+unique(data$FireplaceQu)
+```
+Looking at fireplace quality, there is fireplaces that can give us information on fireplace quality. First, we will identify which rows do not have a fire place then replace FireplaceQu NA's with None
+
+```{r}
+data$FireplaceQu[data$Fireplaces == 0 & !is.na(data$FireplaceQu)]
+
+data$FireplaceQu[is.na(data$FireplaceQu)] = "None"
+unique(data$FireplaceQu)
+```
+There were no inconsistencies within the two columns for fireplaces, so we simply replaced all the NA's with None for FireplaceQu
+
+We also revalue the Fireplace Quality since it is an ordinal variable
+```{r}
+Quality = c("None" = 0, "Po" = 1, "Fa"= 2, "TA" = 3, "Gd" = 4, "Ex"= 5)
+
+data$FireplaceQu = as.integer(revalue(data$FireplaceQu, Quality))
+unique(data$FireplaceQu)
+```
+
+####Garage Variables
+Since all garage variables have the same missing values, except for one NA, I can just assume that the missing values are houses that do not have a garage.
+
+```{r}
+unique(data$GarageType)
+data$GarageType[!is.na(data$GarageType)&is.na(data$GarageArea)]
+
+sum(data$GarageType == "Detchd", na.rm = TRUE)
+which(!is.na(data$GarageType)&is.na(data$GarageFinish))
+
+#Inspecting the one NA where Garagetype is not missing while others are
+data$GarageType[4007]
+```
+
+
+```{r}
+#GarageType
+unique(data$GarageType)
+data$GarageType[is.na(data$GarageType)] = "None"
+unique(data$GarageType)
+
+data$GarageType = factor(data$GarageType)
+
+#GarageFinish(Oridnal)
+unique(data$GarageFinish)
+data$GarageFinish[is.na(data$GarageFinish)] = "None"
+
+finish = c("None" = 0, "RFn" = 2, "Unf" = 1, "Fin"= 3)
+data$GarageFinish = as.integer(revalue(data$GarageFinish, finish))
+unique(data$GarageFinish)
+
+#GarageQual(Ordinal)
+unique(data$GarageQual)
+data$GarageQual[is.na(data$GarageQual)] = "None"
+
+data$GarageQual = as.integer(revalue(data$GarageQual, Quality))
+unique(data$GarageQual)
+
+#GarageCond(Ordinal)
+unique(data$GarageCond)
+data$GarageCond[is.na(data$GarageCond)] = "None"
+
+data$GarageCond = as.integer(revalue(data$GarageCond, Quality))
+unique(data$GarageCond)
+```
+After filling in all the NAs, we determined which garage variables seemed ordinal and converted them to integers to utilize their order. Those that were not ordinal was just turned into a factor.
+
+
+####Bsmt
+Looking at the basement variables that have missing values, they all have a similar number of missing values but there are slight differences in the number of missing values
+
+```{r}
+data$TotalBsmtSF[is.na(data$BsmtFinType1)]
+which(is.na(data$TotalBsmtSF))
+```
+
+```{r}
+which(is.na(data$BsmtQual) & !is.na(data$BsmtFinType2))
+which(is.na(data$BsmtQual) & !is.na(data$BsmtFinType1))
+which(is.na(data$BsmtQual) & !is.na(data$BsmtExposure))
+miss_bsmt = which(is.na(data$BsmtQual))
+
+data$TotalBsmtSF[miss_bsmt]
+miss_bsmt[data$TotalBsmtSF[miss_bsmt] != 0]
+```
+We can see from this analysis that there are 3 observations where BsmtQuality and BsmtCond is missing but is not missing in BsmtFinType2, BsmtFinType1, and Exposure. There are also values in TotalBsmtSF in these 3 observations therefore we have to input a quality for these observations into BsmtQual and BsmtCond. We will use TotalBsmtArea to estimate BsmtQual and OverallCond to estimate BsmtCond
+
+#####BsmtQual(Ordinal)
+```{r}
+#BsmtQual
+data$TotalBsmtSF[c(39,2598,3358,3513,4220,4947)]/mean(data$TotalBsmtSF, na.rm=T) #these basements are very small compared to the average Basement
+data$BsmtQual[c(39,2598, 3358, 3513,4220,4947)] = "Fa"
+
+#Transforming into ordinal
+data$BsmtQual = as.integer(revalue(data$BsmtQual, Quality))
+unique(data$BsmtQual)
+```
+
+#####BsmtCond(Oridnal)
+```{r}
+#Rows where BsmtCond is missing where others are not
+miss_cond=which(is.na(data$BsmtCond) & !is.na(data$BsmtFinType2))
+miss_cond
+
+data$OverallCond[miss_cond]
+
+unique(data$BsmtCond)
+#Seeing the condition of basements of other houses that have 6 or 7 OverallQual
+table(data$BsmtCond[data$OverallCond == 6])
+table(data$BsmtCond[data$OverallCond == 7])
+
+#Most are Ta so we will replace these NAs with Ta
+data$BsmtCond[miss_cond] = "TA"
+
+#Ordinal transformation
+data$BsmtCond = as.integer(revalue(data$BsmtCond, Quality))
+unique(data$BsmtCond)
+
+```
+
+
+#####BsmtExposure(Ordinal)
+```{r}
+#Observations that are missing in BsmtExposure than aren't in other variables
+missing_exp = which(!is.na(data$BsmtQual) & is.na(data$BsmtExposure))
+missing_exp
+
+data$OverallQual[missing_exp]
+
+#Trying to come up with an educated guess as to what the Basement exposure would be looking at OverallQual
+table(data$BsmtExposure[data$OverallQual == 5])
+table(data$BsmtExposure[data$OverallQual == 8])
+
+#We will just assign No exposure to both rows
+data$BsmtExposure[missing_exp] = "No"
+
+#Ordinal Transformation
+exp_quality = c("No" = 1, "Mn" = 2, "Av" = 3, "Gd" = 4)
+
+data$BsmtExposure = as.integer(revalue(data$BsmtExposure, exp_quality))
+
+unique(data$BsmtExposure)
+```
+#####BsmtFinType2
+```{r}
+#There is one observation which is missing where all the other bsmt categoricals are not missing
+which(is.na(data$BsmtFinType2) & !is.na(data$BsmtExposure))
+unique(data$BsmtFinType2)
+
+data$BsmtUnfSF[2116]
+#Since the Unfinish area of the basement seems to be large, we'll just assign this NA as Unf
+data$BsmtFinType2[2116] = "Unf"
+```
+
+
+####Assigning None or 0 values to the rest of NAs
+```{r}
+missing = which(colSums(is.na(data)) > 0)
+sort(colSums(sapply(data[missing], is.na)), decreasing = TRUE)
+```
+
+```{r}
+data$BsmtQual[is.na(data$BsmtQual)] = 0
+data$BsmtCond[is.na(data$BsmtCond)] = 0
+data$BsmtExposure[is.na(data$BsmtExposure)] = 0
+data$BsmtFinType1[is.na(data$BsmtFinType1)] = "None"
+data$BsmtFinType2[is.na(data$BsmtFinType2)] = "None"
+
+#Transforming the non ordinal columns as factors
+data$BsmtFinType1 = factor(data$BsmtFinType1)
+data$BsmtFinType2 = factor(data$BsmtFinType2)
+```
+
+####Msn Variables
+```{r}
+unique(data$MasVnrType)
+is.numeric(data$MasVnrArea)
+```
+There are almost equal number of NAs in between the two variables indicating the NA observations are most likely No masonry area but we will observe the NA which is present in MasVnrType but not in MasVnrArea
+
+```{r}
+which(is.na(data$MasVnrType) & !is.na(data$MasVnrArea))
+data$MasVnrArea[c(2894,4164,4520)]
+table(data$MasVnrType)
+data$MasVnrType[c(2894,4164,4520)] = "BrkFace"
+unique(data$MasVnrType)
+```
+Since there is no clear way to determine the specific Mason type, we just replaced it with the most common type
+#####MsnVnrType
+```{r}
+#Now we will fill in the rest of the NAs
+data$MasVnrType[is.na(data$MasVnrType)] = "None"
+data$MasVnrType = factor(data$MasVnrType)
+```
+
+#####MsnVnrArea
+```{r}
+data$MasVnrArea[is.na(data$MasVnrArea)] = 0
+```
+
+####MsZoning
+```{r}
+unique(data$MSZoning)
+table(data$MSZoning)
+
+data$MSZoning[is.na(data$MSZoning)] = "RL"
+data$MSZoning = factor(data$MSZoning)
+```
+We simply replaced the NA values with the mode
+
+####Functional(Ordinal)
+```{r}
+unique(data$Functional)
+table(data$Functional)
+
+data$Functional[is.na(data$Functional)] = "Typ"
+
+#Transforming into ordinal
+functional_scale = c('Sal' = 0, 'Sev' = 1, 'Maj2'=3, 'Maj1'=4, 'Mod' =5, 'Min2'=6, 'Min1' = 7,'Typ' =8)
+
+data$Functional = as.numeric(revalue(data$Functional, functional_scale))
+```
+
+####Utilties
+```{r}
+unique(data$Utilities)
+
+data$Utilities[is.na(data$Utilities)] = "AllPub"
+
+data$Utilities = factor(data$Utilities)
+```
+
+####Electrical(Ordinal)
+```{r}
+unique(data$Electrical)
+table(data$Electrical)
+
+data$Electrical[is.na(data$Electrical)] = "SBrkr"
+
+#Ordinal Transformation
+elec_qual = c('FuseP' = 0, 'FuseF' =1, 'FuseA' = 2, 'SBrkr'= 3)
+
+data$Electrical = as.numeric(revalue(data$Electrical, elec_qual))
+unique(data$Electrical)
+```
+
+
+#####KitchenQual(Ordinal)
+```{r}
+unique(data$KitchenQual)
+which(is.na(data$KitchenQual))
+
+data$KitchenAbvGr[c(1458,2735)]
+table(data$KitchenAbvGr)
+
+data$KitchenQual = as.numeric(revalue(data$KitchenQual, Quality))
+```
+
+####Transforming the rest of the ordinal variables
+```{r}
+#MSSubClass (not an ordinal variable)
+##We will convert this to a categorical variable since it would be better
+table(data$MSSubClass)
+data$MSSubClass = as.factor(data$MSSubClass)
+```
+#####Street
+```{r}
+#Not an ordinal variable, we will simply convert to factor
+unique(data$Street)
+data$Street = factor(data$Street)
+```
+
+#####LotShape
+```{r}
+#Not an ordinal factor
+unique(data$LotShape)
+data$LotShape = factor(data$LotShape)
+```
+
+#####LandContour
+```{r}
+#Not an ordinal factor
+unique(data$LandContour)
+data$LandContour = factor(data$LandContour)
+```
+
+#####LotConfig
+```{r}
+#Not ordinal
+data$LotConfig = factor(data$LotConfig)
+```
+
+#####LandSlope
+```{r}
+#Not ordinal
+data$LandSlope = factor(data$LandSlope)
+```
+#####Neighborhood
+```{r}
+#Not ordinal
+data$Neighborhood = factor(data$Neighborhood)
+```
+#####Condition1&2
+```{r}
+#Not ordinal
+data$Condition1 = factor(data$Condition1)
+data$Condition2 = factor(data$Condition2)
+```
+#####BldgType
+```{r}
+#Not ordinal
+data$BldgType = factor(data$BldgType)
+```
+#####HouseStyle
+```{r}
+#Not ordinal
+data$HouseStyle = factor(data$HouseStyle)
+```
+#####RoofStyle
+```{r}
+#Not ordinal
+data$RoofStyle = factor(data$RoofStyle)
+```
+
+#####RoofMatl
+```{r}
+#Not ordinal
+unique(data$RoofMatl)
+data$RoofMatl = factor(data$RoofMatl)
+```
+#####Exterior1st&2nd
+```{r}
+#Not ordinal
+
+#Inspecting the missing values
+which(is.na(data$Exterior1st))
+which(is.na(data$Exterior2nd))
+
+#Imputing with mode
+table(data$Exterior1st)
+data$Exterior1st[3870] = "VinylSd"
+
+table(data$Exterior2nd)
+data$Exterior2nd[3870] = "VinylSd"
+
+data$Exterior1st = factor(data$Exterior1st)
+
+data$Exterior2nd = factor(data$Exterior2nd)
+```
+
+#####ExterQual(ordinal)
+```{r}
+#ordinal
+unique(data$ExterQual)
+data$ExterQual = as.numeric(revalue(data$ExterQual, Quality))
+```
+#####ExterCond
+```{r}
+#ordinal
+data$ExterCond = as.numeric(revalue(data$ExterCond, Quality))
+```
+#####Foundation
+```{r}
+#Not ordinal
+data$Foundation = factor(data$Foundation)
+```
+#####Heating
+```{r}
+#not ordinal
+data$Heating = factor(data$Heating)
+```
+#####HeatingQC(ordinal)
+```{r}
+#ordinal
+data$HeatingQC = as.numeric(revalue(data$HeatingQC, Quality))
+```
+#####CentralAir
+```{r}
+data$CentralAir = factor(data$CentralAir)
+```
+
+#####PavedDrive
+```{r}
+unique(data$PavedDrive)
+data$PavedDrive = factor(data$PavedDrive)
+```
+
+#####SaleType
+```{r}
+#Not ordinal
+
+#Imputing mode to missing value
+table(data$SaleType)
+data$SaleType[is.na(data$SaleType)] = "WD"
+
+data$SaleType = factor(data$SaleType)
+```
+
+#####SaleCondition
+```{r}
+data$SaleCondition = factor(data$SaleCondition)
+```
+
+
+####Affordabillity
+```{r}
+data$affordabilitty = factor(data$affordabilitty)
+```
+
+####Rest of Missing Values
+We determined that the best way to impute the rest of the values would be with predictive NA imputing, we decided to use the MICE package for that purpose.
+```{r}
+missing = which(colSums(is.na(data)) > 0)
+sort(colSums(sapply(data[missing], is.na)), decreasing = TRUE)
+
+temp <- mice(data, m=5,method="pmm", maxit=15, seed=500)
+imputed = complete(temp)
+table(is.na(imputed))
+```
+
+
+
+###3.0 Important variables
+
+####Random forest
+#####Using Random forest to see the most important variables
+```{r}
+head(imputed)
+all = imputed
+imputed = all[1:3498,]
+set.seed(12345)
+#Importance plot of all variables
+im_var = randomForest(affordabilitty~., data=imputed, ntree=100, importance=TRUE)
+varImpPlot(im_var)
+
+#Importance plot of numerical variables
+num.tree = randomForest(affordabilitty~., data=imputed[,c(num_index,80)], ntree=100, importance=TRUE)
+varImpPlot((num.tree))
+```
+
+
+###4.0 Feature Engineering
+
+With a little research we found that some of the most important variables in determing house price were, size, age and condition, upgrades, neighborhood. Though some of these variables are already in the dataset, we will revisit some and try to create some new variables.
+
+####House size
+Here we will combine the sqft area under the ground and above the ground to find the total sqft of the house
+```{r}
+all$TotalSqFt = all$GrLivArea + all$TotalBsmtSF
+```
+
+####House age and condition
+Since we already have a variable that determines house condition so we do not need to create it. As for house age, we do not have a variable, so we can make one by using year built and year sold. We also might want to create a variable that indicates whether the house bought was new or not.
+```{r}
+all$Age = all$YrSold - all$YearBuilt
+
+###Making the "new" variable
+new = all$Age <= 1
+all$New = factor(new)
+```
+
+####Upgrades
+For upgrades, the closest variable we would have is YearRemodAdd. These are just the remodel years so we will make a remodeled variable that says yes or no if the house had been remodeled. The year is the same in YearRemodAdd to YearBuilt if the house had not been remodeled
+```{r}
+all$Remodeled = all$YearRemodAdd != all$YearBuilt
+all$Remodeled = factor(all$Remodeled)
+```
+
+####Neighborhood
+There is already a neighborhood variable so we do not need to create one
+```{r}
+head(all$Neighborhood)
+```
+
+###5.0 Collinearity
+
+```{r}
+num_index = which(sapply(all, is.numeric))
+num_cor = as.matrix(cor(all[,num_index], use="pairwise.complete.obs"))
+
+high_cor = which(num_cor>0.7 & num_cor!=1, arr.ind=TRUE)#Rows and columns of highly correlated variables
+cor_values = num_cor[num_cor>0.7 & num_cor!=1]
+
+cb = cbind(high_cor, cor_values)
+
+cor_data = as.data.frame(cb)
+cor_data
+
+names = colnames(as.data.frame(num_cor))
+foo = seq(1,51)
+names(foo) = names
+foo
+
+#Making a column of the col names
+cols = vector()
+for(i in 1:length(cor_data$col)){
+  cols[i] = names(foo)[cor_data$col[i]]
+}
+
+cor_data$col = cols
+cor_data
+```
+Now that we have a data frame of all the variables that have high correlations, we will pick the variable of the two variables that seem more important
+
+####Dropping the highly correlated variables
+```{r}
+drop = c('GarageYrBlt', 'X1stFlrSF', 'TotalBsmtSF', 'GrLivArea', 'Fireplaces', 'GarageArea', 'GarageCond', 'PoolQC', 'ExterQual')
+var.out.bool <- !names(all) %in% drop
+
+all = all[,var.out.bool]
+```
+
+###6.0 Normalizing and scaling the predictors
+```{r}
+#Extracting the true numerical predictors from the categorical and the ordinal variables
+drop = c('GarageYrBlt', 'X1stFlrSF', 'TotalBsmtSF', 'GrLivArea', 'Fireplaces', 'GarageArea', 'GarageCond', 'PoolQC','MoSold','YrSold','OverallQual','OverallCond', 'Ob','MSSubClass', 'ExterQual')
+var.drop = !names(numeric_index) %in% drop
+numeric_index[var.drop]
+
+all_numeric = names(all) %in% names(numeric_index[var.drop])
+
+all_num = all[,all_numeric]
+all_num$TotalSqFt = all$TotalSqFt
+all_num$Age = all$Age
+
+all_cat = all[,!all_numeric]
+all_cat = all_cat[,-c(47,48)]
+head(all_cat)
+```
+
+####Removing skewness in the numerical predictors
+```{r}
+for(i in 1:ncol(all_num)){
+  if(abs(skewness(all_num[,i]))>0.8){
+    all_num[,i] = log(all_num[,i]+1)
+  }
+}
+
+all_num
+```
+####Scaling the numerical predictors
+```{r}
+all_num = scale(all_num)
+all_num = as.data.frame(all_num)
+```
+
+###7.0 One hot encoding the categorical variables
+We need to change all the factor variables into numerical because many machine learning algorithms only take in numerical data.
+```{r}
+#Splitting the categorical data into factors and ordinal
+cat_index = which(sapply(all_cat, is.numeric))
+all_fac = all_cat[,-cat_index]
+all_ord = all_cat[,cat_index]
+
+#Quick fix to YrSold to make into a categorical variable
+all_fac$YrSold = factor(all_ord$YrSold)
+all_ord = all_ord[,-15]
+```
+
+####One hot encoding
+```{r}
+dmy <- dummyVars(" ~ .", data = all_fac[,-7])
+all_dummy <- data.frame(predict(dmy, newdata = all_fac[,-7]))
+head(all_dummy)
+```
+
+
+###8.0 Combining the final DataSet
+```{r}
+final = cbind.data.frame(all_num, all_ord)
+final = cbind.data.frame(final, all_dummy)
+head(final)
+```
+
+```{r}
+final_train = final[1:3498,]
+final_test = final[3499:4998,]
+
+final_train = final_train[,-c(249,250)]
+final_train$affordabilitty = all_cat$affordabilitty[1:3498]
+final_test = final_test[,-c(249,250)]
+```
+
+
+###9.0 Models
+```{r}
+train = sample(1:3498, 2798,replace = F)
+
+model_train = final_train[train,]
+model_test = final_train[-train,]
+```
+
+###
+```{r}
+model.tree = randomForest(affordabilitty ~ ., data = model_train, mtry = 30, importance = TRUE, ntree = 300)
+varImpPlot(model.tree)
+model.tree
+preds = predict(model.tree, newdata = model_test[,-258]) 
+cm = confusionMatrix(preds, model_test[,258])
+fourfoldplot(cm$table)
+```
+
+
